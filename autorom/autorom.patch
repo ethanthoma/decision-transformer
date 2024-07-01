@@ -1,0 +1,43 @@
+diff --git a/src/AutoROM.py b/src/AutoROM.py
+--- a/src/AutoROM.py
++++ b/src/AutoROM.py
+@@ -9,9 +9,9 @@ import tarfile
+ import warnings
+ from collections import namedtuple
+ from typing import Dict
++from pathlib import Path
+ 
+ import click
+-import requests
+ 
+ if sys.version_info < (3, 9):
+     import importlib_resources as resources
+@@ -142,12 +141,10 @@ status_meaning = {
+ 
+ 
+ def download_tar():
+-    # use requests to download the base64 file
+-    url = "https://gist.githubusercontent.com/jjshoots/61b22aefce4456920ba99f2c36906eda/raw/00046ac3403768bfe45857610a3d333b8e35e026/Roms.tar.gz.b64"
+-    r = requests.get(url, allow_redirects=False)
++    roms_as_base64_tar_gz = Path('roms_as_base64_tar_gz.b64').read_text()
+ 
+     # decode the b64 into the tar.gz
+-    tar_gz = base64.b64decode(r.content)
++    tar_gz = base64.b64decode(roms_as_base64_tar_gz)
+ 
+     # save the tar.gz
+     save_path = os.path.dirname(__file__)
+@@ -317,9 +317,6 @@ def main(accept_license, source_file, install_dir, quiet):
+         else:
+             print("Failed to read tar archive. Verify your source file?")
+         return
+-    except requests.ConnectionError:
+-        print("Network connection error. Check your network settings?")
+-        return
+ 
+     # Print missing ROMs
+     for rom in checksum_map.values():
+-- 
+2.42.0
+
+

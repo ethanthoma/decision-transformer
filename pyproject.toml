@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "app"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+license = "MIT"
+readme = "README.md"
+
+
+[tool.poetry.scripts]
+app = "app:train_decision_transformer"
+
+
+[tool.poetry.dependencies]
+python = "^3.11"
+tinygrad = "^0.9.0"
+importlib-resources = "6.4.0"
+ale-py = "0.8.1"
+shimmy = "0.2.1"
+gymnasium = "^0.29.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
