@@ -26,8 +26,6 @@ buildPythonPackage rec {
     sha256 = "sha256-fC5OOXAnnP4x4j/IbpG0YdTz5F5pgyY0tumNjyrQ8FM=";
   };
 
-  env.ALE_ROM_DIR = "$out/share/roms/";
-
   preConfigure = ''
     cd ./packages/AutoROM.accept-rom-license
   '';
@@ -56,5 +54,3 @@ buildPythonPackage rec {
     platforms = platforms.all;
   };
 }
-
-

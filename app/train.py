@@ -4,21 +4,6 @@ from tinygrad import Tensor
 
 from .model import DecisionTransformer
 
-import os
-from pathlib import Path
-os.environ['ALE_ROMS_DIR'] = '/nix/store/chaampdfcg9shwb67qdzwhdag8m3gi5j-python3.11-app-0.1.0/lib/python3.11/site-packages/ale_py/roms'
-os.environ['ALE_PY_ROM_DIR'] = '/nix/store/chaampdfcg9shwb67qdzwhdag8m3gi5j-python3.11-app-0.1.0/lib/python3.11/site-packages/ale_py/roms'
-
-roms_dir = Path(os_environ_path)
-
-if not roms_dir.exists():
-    raise NotADirectoryError(
-        f"ROM directory {roms_dir.absolute()} doesn't exist")
-elif not roms_dir.is_dir():
-    raise NotADirectoryError(
-        f"ROM directory {roms_dir.absolute()} isn't a directory"
-    )
-
 gym.register_envs(ale_py)
 
 env = gym.make("ALE/Pong-v5")
