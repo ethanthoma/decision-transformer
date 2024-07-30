@@ -1,71 +1,157 @@
 import ale_py
 import gymnasium as gym
-from tinygrad import Tensor, nn
-from tinygrad.nn import optim
 import numpy as np
+from tinygrad import Tensor
+from tinygrad.nn.state import get_parameters
+from tinygrad.nn.optim import SGD
+from typing import Tuple
+
+from tinygrad import TinyJit
+from tinygrad.nn.state import safe_save, get_state_dict
 
 from .model import DecisionTransformer
+from .buffer import ReplayBuffer
 
-
-from .dataset import create_dataset
 
 gym.register_envs(ale_py)
 
-env = gym.make("ALE/Pong-v5")
+# data parameters
+max_timesteps = 100_000
+dataset_size = 10_000
 
+# model parameters
+embed_size = 128
+n_layers = 6
+n_heads = 8
 
-def train_decision_transformer():
-    # pong
-    n_layers: int = 6
-    n_heads: int = 8
-    embed_size: int = 128
-    max_length: int = 50
-    return_to_go_conditioning: int = 20
+# training parameters
+batch_size = 128
+epochs = 5
+lr = 6e-4
 
-    state_dim: int = 210 * 160 * 3
-    action_dim: int = 18
-    learning_rate: float = 6e-4
-    batch_size: int = 512
-    num_epochs: int = 5
+# game parameters
+game_name = "Pong-v4"
+max_context_length = 50
+state_dim = 210 * 160
+act_dim = 6
 
-    max_timesteps = 1000
+def train_rl():
+    print("Training RL model...")
 
-    game = 'Pong'
-    data_dir_prefix = '/path/to/dataset/'  # Change this to your dataset path
-    num_buffers = 50
-    observations, actions, rewards, terminals, next_observations = create_dataset(
-        game, data_dir_prefix, num_buffers)
-    print(f"Data loaded for {game}. Starting training...")
+    # Initialize the environment
+    print("Initializing environment...")
+    env = gym.make(game_name, obs_type="grayscale")
 
+    print("Initializing replay buffer...")
+    buffer = makeBuffer(dataset_size, state_dim, max_context_length, max_timesteps, env)
+
+    # Initialize the model
+    print("Initializing model...")
     model = DecisionTransformer(
-        embed_size, max_length, max_length, state_dim, action_dim, n_layers, n_heads)
+        embed_size=embed_size,
+        max_context_length=max_context_length,
+        state_dim=state_dim,
+        act_dim=act_dim,
+        n_layers=n_layers,
+        n_heads=n_heads,
+    )
 
-    optimizer = optim.Adam(nn.state.get_parameters(model), lr=learning_rate)
+    # Define the optimizer and loss function
+    parameters = get_parameters(model)
+    print(f"parameter count {np.sum([np.prod(t.shape) for t in parameters]):,}")
+    optim = SGD(parameters, lr=lr)
 
-    trajectories = collect_trajectories(env, model, 100, max_timesteps)
+    @TinyJit
+    def jit(*args):
+        return model(*args).realize()
 
-    for epoch in range(num_epochs):
-        for batch_idx in range(0, len(trajectories), batch_size):
-            batch = trajectories[batch_idx:batch_idx + batch_size]
-            states = Tensor(np.array([t["states"] for t in batch]))
-            actions = Tensor(np.array([t["actions"] for t in batch]))
-            returns_to_go = Tensor(np.array(
-                [[sum(t["rewards"][i:]) for i in range(len(t["rewards"]))] for t in batch]))
+    # Define the training loop
+    def step(states: Tensor, actions: Tensor, returns_to_go: Tensor, timesteps: Tensor, targets: Tensor) -> Tuple[Tensor, Tensor]:
+        Tensor.training = True
 
-            print(states.shape, actions.shape, returns_to_go.shape)
+        optim.zero_grad()
+        out = jit(states, actions, returns_to_go, timesteps)
 
-            optimizer.zero_grad()
+        loss = out.sparse_categorical_crossentropy(targets.squeeze(-1)).mul(returns_to_go).mean().backward()
+        optim.step()
 
-            returns_preds, state_preds, action_preds = model(
-                returns_to_go, states, actions, Tensor(np.arange(states.shape[1])))
+        cat = out.argmax(axis=-1).unsqueeze(-1)
+        accuracy = (cat == targets).mean()
 
-            loss = ((returns_preds - returns_to_go[:, :-1]) ** 2).mean() + \
-                   ((state_preds - states[:, 1:]) ** 2).mean() + \
-                nn.CrossEntropyLoss()(action_preds, actions[:, 1:].long())
-            loss.backward()
-            optimizer.step()
+        return loss.realize(), accuracy.realize()
 
-            print(
-                f"Epoch {epoch+1}/{num_epochs}, Batch {batch_idx+1}/{len(trajectories)//batch_size}, Loss: {loss.item()}")
+    # Train the model
+    print("Training model...")
+    with Tensor.train():
+        for epoch in range(epochs):
+            for _step in range(dataset_size // batch_size):
+                batch = buffer.sample(batch_size)
 
-    return model
+                states, actions, returns_to_go, timesteps = batch
+
+                states = Tensor(states, requires_grad=True)
+                actions = Tensor(actions)
+                returns_to_go = Tensor(returns_to_go, requires_grad=True)
+                timesteps = Tensor(timesteps, requires_grad=True)
+
+                targets = actions
+
+                loss, accuracy = step(states, actions, returns_to_go, timesteps, targets)
+
+                print(f"Epoch {epoch+1}, Step {_step+1} | Loss: {loss.numpy()}, Accuracy: {accuracy.numpy()}")
+
+    state_dict = get_state_dict(model)
+    safe_save(state_dict, "model.safetensors")
+
+
+def makeBuffer(dataset_size: int, state_dim: int, max_context_length: int, max_timesteps: int, env):
+    buffer = ReplayBuffer(dataset_size, state_dim, max_context_length)
+    obs = None
+    done = None
+    t = 0
+    rtg = 0
+
+    states = np.zeros([max_timesteps, state_dim])
+    actions = np.zeros([max_timesteps, 1])
+    rewards = np.zeros([max_timesteps, 1])
+    timesteps = np.zeros([max_timesteps, 1])
+
+    for _ in range(dataset_size):
+        if t == 0:
+            obs = env.reset()[0]
+
+        t += 1
+
+        action = env.action_space.sample()
+        next_obs, reward, done, _, _ = env.step(action)
+        rtg += reward
+
+        states[t, :] = np.array(obs).flatten()
+        actions[t, :] = action
+        rewards[t, :] = reward
+        timesteps[t, :] = t
+
+        obs = next_obs
+
+        if done or t == max_timesteps:
+            done_idx = t
+
+            offset = np.random.randint(0, done_idx)
+            length = min(done_idx-offset, max_context_length)
+            end = offset + length
+
+            rewards = rewards.max() - rewards
+
+            buffer.add(
+                states=states[offset:end], 
+                actions=actions[offset:end], 
+                returns_to_go=rewards[offset:end], 
+                timesteps=timesteps[offset:end],
+                done_idx=done_idx,
+            )
+
+            done = False
+            t = 0
+            rtg = 0
+
+    return buffer

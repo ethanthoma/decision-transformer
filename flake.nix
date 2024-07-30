@@ -8,14 +8,23 @@
       url = "github:nix-community/poetry2nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nixgl.url = "github:nix-community/nixGL";
   };
 
-  outputs = { self, nixpkgs, flake-utils, poetry2nix }:
+  outputs = { self, nixpkgs, flake-utils, poetry2nix, nixgl }:
     flake-utils.lib.eachDefaultSystem
       (system:
         let
           # see https://github.com/nix-community/poetry2nix/tree/master#api for more functions and examples.
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = import nixpkgs {
+            inherit system;
+            config = {
+              allowUnfree = true;
+              allowUnfreePredicate = _: true;
+              cudaSupport = true;
+            };
+            overlays = [ nixgl.overlay ];
+          };
           inherit (poetry2nix.lib.mkPoetry2Nix { inherit pkgs; }) mkPoetryApplication defaultPoetryOverrides;
 
           name = "myapp";
@@ -50,61 +59,35 @@
 
                   inherit python;
 
-                  buildInputs = [ pkgs.makeWrapper SDL2 ];
+                  buildInputs = [
+                    pkgs.makeWrapper
+                    SDL2
+                    pkgs.llvmPackages.libcxx
+                  ];
 
-                  nativeBuildInputs = [ pkgs.poetry ];
+                  nativeBuildInputs = [
+                    pkgs.poetry
+                    pkgs.llvmPackages.clang
+                    pkgs.pkg-config
+                  ];
 
-                  preferWheels = true;
+                  preferWheels = false;
 
                   overrides = defaultPoetryOverrides.extend
                     (final: prev: {
-                      pygame = prev.pygame.overrideAttrs
+                      gymnasium = prev.gymnasium.overridePythonAttrs
                         (
-                          old: rec {
-                            nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [
-                              pythonPackages.cython
-                              pkgs.pkg-config
-                              pkgs.SDL2
-                              pkgs.makeWrapper
-                              pkgs.autoPatchelfHook
-                              pkgs.dpkg
-                              pythonPackages.wrapPython
-                              pkgs.libGL
-                              prev.setuptools
-                            ];
-
-                            buildInputs = (old.buildInputs or [ ]) ++ (with pkgs; [
-                              freetype
-                              libjpeg
-                              libpng
-                              xorg.libX11
-                              portmidi
-                              pkgs.SDL2
-                              SDL2_image
-                              SDL2_mixer
-                              SDL2_ttf
-                              prev.setuptools
-                            ]);
-
-                            src = pkgs.fetchPypi {
-                              pname = "pygame";
-                              version = "2.5.2";
-                              hash = "sha256-wbietdU556xc91UTEl+18vCi2Rix/W6YHyO/CsGxwko=";
-                            };
-
-                            preConfigure = '''';
-
-                            preBuild = ''
-                              export PYSDL2_DLL_PATH="${pkgs.SDL2}/lib/libSDL2.so"
-                            '';
-
-                            postInstall = ''
-                              wrapPythonPrograms
-                            '';
+                          old: {
+                            buildInputs = (old.buildInputs or [ ]) ++ [ roms ];
                           }
                         );
-                    }
-                    );
+                      shimmy = prev.shimmy.overridePythonAttrs
+                        (
+                          old: {
+                            buildInputs = (old.buildInputs or [ ]) ++ [ prev.setuptools ];
+                          }
+                        );
+                    });
 
                   postInstall = ''
                     ln -s ${SDL2}/lib/libSDL2-2.0.so.0.18.2 $out/lib/libSDL2-2.0.so.0.16.0
@@ -119,10 +102,6 @@
 
           devShells.default = pkgs.mkShell {
             inputsFrom = [ self.packages.${system}.${name} ];
-          };
-
-          devShells.poetry = pkgs.mkShell {
-            packages = [ pkgs.poetry ];
           };
         });
 }
