@@ -23,13 +23,25 @@ class ReplayBuffer:
         if self.finished_adding:
             raise ValueError("Cannot add to buffer after sampling")
 
-        length = states.shape[0]
+        length = min(states.shape[0], self.capacity - self.index)
+
+        # Pad arrays if they're too short
+        def pad_array(arr, target_length):
+            if arr.shape[0] < target_length:
+                pad_width = ((0, target_length - arr.shape[0]), (0, 0))
+                return np.pad(arr, pad_width, mode='constant')
+            return arr[:target_length]
+
+        states = pad_array(states, length)
+        actions = pad_array(actions, length)
+        returns_to_go = pad_array(returns_to_go, length)
+        timesteps = pad_array(timesteps, length)
 
         self.states[self.index:self.index+length] = states
         self.actions[self.index:self.index+length] = actions
         self.returns_to_go[self.index:self.index+length] = returns_to_go
         self.timesteps[self.index:self.index+length] = timesteps
-        self.done_idx.append(done_idx)
+        self.done_idx.append(min(done_idx, length) + self.index)
         self.index = (self.index + length) % self.capacity
 
     def __getitem__(self, index: int) -> Tuple[ArrayLike, ArrayLike, ArrayLike, ArrayLike]:
@@ -46,6 +58,9 @@ class ReplayBuffer:
             self.returns_to_go[index:closest_idx],
             self.timesteps[index:closest_idx],
         )
+
+    def __len__(self) -> int:
+        return self.index
 
     def sample(self, batch_size: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         indices = np.random.randint(0, self.done_idx[-1], size=batch_size)

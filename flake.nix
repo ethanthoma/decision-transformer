@@ -27,8 +27,6 @@
           };
           inherit (poetry2nix.lib.mkPoetry2Nix { inherit pkgs; }) mkPoetryApplication defaultPoetryOverrides;
 
-          name = "myapp";
-
           python = pkgs.python311;
           pythonVersionNoDot = builtins.replaceStrings [ "." ] [ "" ] python.pythonVersion;
           pythonPackages = builtins.import
@@ -51,57 +49,66 @@
             { inherit system; }).SDL2;
         in
         {
-          packages =
-            {
-              ${name} =
-                mkPoetryApplication {
-                  projectDir = self;
+          packages = {
+            default = mkPoetryApplication {
+              projectDir = self;
 
-                  inherit python;
+              inherit python;
 
-                  buildInputs = [
-                    pkgs.makeWrapper
-                    SDL2
-                    pkgs.llvmPackages.libcxx
-                  ];
+              buildInputs = [
+                pkgs.makeWrapper
+                SDL2
+                pkgs.llvmPackages.libcxx
+              ];
 
-                  nativeBuildInputs = [
-                    pkgs.poetry
-                    pkgs.llvmPackages.clang
-                    pkgs.pkg-config
-                  ];
+              nativeBuildInputs = [
+                pkgs.poetry
+                pkgs.llvmPackages.clang
+                pkgs.pkg-config
+              ];
 
-                  preferWheels = false;
+              preferWheels = false;
 
-                  overrides = defaultPoetryOverrides.extend
-                    (final: prev: {
-                      gymnasium = prev.gymnasium.overridePythonAttrs
-                        (
-                          old: {
-                            buildInputs = (old.buildInputs or [ ]) ++ [ roms ];
-                          }
-                        );
-                      shimmy = prev.shimmy.overridePythonAttrs
-                        (
-                          old: {
-                            buildInputs = (old.buildInputs or [ ]) ++ [ prev.setuptools ];
-                          }
-                        );
-                    });
+              overrides = defaultPoetryOverrides.extend
+                (final: prev: {
+                  tinygrad = prev.tinygrad.overridePythonAttrs
+                    (
+                      old: {
+                        postPatch =
+                          ''
+                            substituteInPlace tinygrad/engine/jit.py --replace-fail '"CUDA", "NV", "AMD"' '"CUDA", "NV", "AMD", "HSA"'
+                            substituteInPlace tinygrad/engine/search.py --replace-fail '"CUDA", "AMD", "NV"' '"CUDA", "AMD", "NV", "HSA"'
+                            # patch correct path to opencl
+                            substituteInPlace tinygrad/runtime/autogen/opencl.py --replace-fail "ctypes.util.find_library('OpenCL')" "'${pkgs.ocl-icd}/lib/libOpenCL.so'"
+                          '';
+                      }
+                    );
+                  gymnasium = prev.gymnasium.overridePythonAttrs
+                    (
+                      old: {
+                        buildInputs = (old.buildInputs or [ ]) ++ [ roms ];
+                      }
+                    );
+                  shimmy = prev.shimmy.overridePythonAttrs
+                    (
+                      old: {
+                        buildInputs = (old.buildInputs or [ ]) ++ [ prev.setuptools ];
+                      }
+                    );
+                });
 
-                  postInstall = ''
-                    ln -s ${SDL2}/lib/libSDL2-2.0.so.0.18.2 $out/lib/libSDL2-2.0.so.0.16.0
+              postInstall = ''
+                ln -s ${SDL2}/lib/libSDL2-2.0.so.0.18.2 $out/lib/libSDL2-2.0.so.0.16.0
 
-                    wrapProgram $out/bin/app --set ALE_PY_ROM_DIR "${roms.out}/share/roms/" \
-                                             --set LD_LIBRARY_PATH "$out/lib"
-                  '';
-                };
-
-              default = self.packages.${system}.${name};
+                wrapProgram $out/bin/app --set ALE_PY_ROM_DIR "${roms.out}/share/roms/" \
+                                         --set LD_LIBRARY_PATH "$out/lib" \
+              '';
             };
+          };
 
           devShells.default = pkgs.mkShell {
-            inputsFrom = [ self.packages.${system}.${name} ];
+            inputsFrom = [ self.packages.${system}.default ];
           };
-        });
+        }
+      );
 }
