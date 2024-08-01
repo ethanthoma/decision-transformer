@@ -1,6 +1,7 @@
 import ale_py
 import gymnasium as gym
 import numpy as np
+import os
 from tinygrad import TinyJit, Tensor
 from tinygrad.nn.optim import SGD
 from tinygrad.nn.state import get_parameters, get_state_dict, safe_save
@@ -11,36 +12,38 @@ from .model import DecisionTransformer
 
 gym.register_envs(ale_py)
 
-# data parameters
-dataset_size = 10_000
-max_timesteps = 100_000
-
-# model parameters
-embed_size = 128
-n_heads = 8
-n_layers = 6
-
-# training parameters
-batch_size = 512
-epochs = 5
-lr = 6e-4
-
-# game parameters
-act_dim = 6
-game = "Pong"
-max_context_length = 50
-state_dim = 84 * 84
-
-def train():
+def train(config: dict):
     print("Training RL model...")
+
+    act_dim = config['act_dim']
+    batch_size = config['batch_size']
+    data_dir = config['dataset_dir']
+    dataset_size = config['dataset_size']
+    embed_size = config['embed_size']
+    epochs = config['epochs']
+    game = config['game']
+    lr = config['lr']
+    max_context_length = config['max_context_length']
+    max_timesteps = config['max_timesteps']
+    model_dir = config['model_dir']
+    n_heads = config['n_heads']
+    n_layers = config['n_layers']
+    num_checkpoints = config['num_checkpoints']
+    split = config['split']
+    state_dim = config['state_dim']
+    train_set_path = config['train_set_path']
 
     print("Initializing dataset...")
     dataset = DQNDataset(
         state_dim=state_dim, 
         max_context_length=max_context_length, 
         max_timesteps=max_timesteps, 
-        size=dataset_size, 
         game=game,
+        data_dir=data_dir,
+        size=dataset_size, 
+        split=split, 
+        num_checkpoints=num_checkpoints, 
+        train_set_path=train_set_path,
     )
 
     # Initialize the model
@@ -98,4 +101,4 @@ def train():
 
             # Save the model
             state_dict = get_state_dict(model)
-            safe_save(state_dict, f"models/model-epoch{epoch+1}.safetensors")
+            safe_save(state_dict, os.path.join(model_dir, f"model-epoch{epoch+1}.safetensors"))

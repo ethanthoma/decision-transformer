@@ -1,32 +1,30 @@
 import ale_py
 import gymnasium as gym
 import numpy as np
+import os
 from tinygrad.tensor import Tensor
 from tinygrad.nn.state import safe_load, load_state_dict
 
 from .model import DecisionTransformer
 
+
 gym.register_envs(ale_py)
 
-# model parameters
-embed_size = 128
-n_layers = 6
-n_heads = 8
+def test(config: dict):
+    act_dim = config['act_dim']
+    embed_size = config['embed_size']
+    game = config['game']
+    game_version = config['game_version']
+    n_heads = config['n_heads']
+    n_layers = config['n_layers']
+    max_context_length = config['max_context_length']
+    max_steps = config['max_steps']
+    model_dir = config['model_dir']
+    model_name = config['model_name']
+    num_episodes = config['num_episodes']
+    state_dim = config['state_dim']
+    target_return = config['target_return']
 
-# testing parameters
-num_episodes = 10
-max_steps = 1000
-model_path = "models/model-epoch5.safetensors"
-
-# game parameters
-game = "Pong"
-game_version = "v4"
-max_context_length = 50
-state_dim = 210 * 160
-act_dim = 6
-target_return = 20
-
-def evaluate_model(model_path, num_episodes=10, max_steps=1000):
     # Load the environment
     game_name = f"{game}-{game_version}"
     env = gym.make(game_name, obs_type="grayscale")
@@ -42,7 +40,7 @@ def evaluate_model(model_path, num_episodes=10, max_steps=1000):
     )
     
     # Load the saved weights
-    state_dict = safe_load(model_path)
+    state_dict = safe_load(os.path.join(model_dir, model_name))
     load_state_dict(model, state_dict)
     
     total_rewards = []
@@ -98,6 +96,3 @@ def evaluate_model(model_path, num_episodes=10, max_steps=1000):
     print(f"\nAverage Reward over {num_episodes} episodes: {avg_reward}")
     
     return avg_reward
-
-def test():
-    evaluate_model(model_path, num_episodes, max_steps)

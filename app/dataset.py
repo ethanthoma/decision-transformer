@@ -7,7 +7,7 @@ from typing import Tuple
 from .buffer import ReplayBuffer
 
 class DQNDataset:
-    def __init__(self, state_dim: int, max_context_length: int, max_timesteps: int, game: str, data_dir: str = "data", size: int = 500_000, split: int = 1, num_checkpoints: int = 50):
+    def __init__(self, state_dim: int, max_context_length: int, max_timesteps: int, game: str, data_dir: str = "data", size: int = 500_000, split: int = 1, num_checkpoints: int = 50, train_set_path: str = "train-set")
         self.size = size
         self.num_checkpoints = num_checkpoints
         split: str = str(split)
