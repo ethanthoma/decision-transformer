@@ -23,14 +23,13 @@ class MultiHeadSelfAttention:
     def __call__(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
         # x shape: (n, seq_len, embed_size)
         # mask shape: (n, seq_len, seq_len)
-        query, key, value = Tensor.einsum('bij,jkt->tbik', x, self.qkv)
+        query, key, value = Tensor.einsum("bij,jkt->tbik", x, self.qkv)
 
-        query = Tensor.einsum('bij,hjk->bhik', query, self.w_q)
-        key = Tensor.einsum('bij,hjk->bhik', key, self.w_k)
-        value = Tensor.einsum('bij,hjk->bhik', value, self.w_v)
+        query = Tensor.einsum("bij,hjk->bhik", query, self.w_q)
+        key = Tensor.einsum("bij,hjk->bhik", key, self.w_k)
+        value = Tensor.einsum("bij,hjk->bhik", value, self.w_v)
 
-        attention = Tensor.scaled_dot_product_attention(
-            query, key, value, mask)
+        attention = Tensor.scaled_dot_product_attention(query, key, value, mask)
 
         attention = attention.dropout(0.6)
 
@@ -64,28 +63,56 @@ class TransformerBlock:
         return x
 
 
+class StateEncoder:
+    def __init__(self, embed_size: int):
+        self.conv1 = nn.Conv2d(4, 32, 8, stride=4)
+        self.conv2 = nn.Conv2d(32, 64, 4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, 3)
+        self.linear = nn.Linear(3136, embed_size)
+
+    def __call__(self, x: Tensor) -> Tensor:
+        x = self.conv1(x).relu()
+        x = self.conv2(x).relu()
+        x = self.conv3(x).relu().flatten(start_dim=1)
+        x = self.linear(x).tanh()
+        return x
+
+
 class DecisionTransformer:
-    def __init__(self, embed_size: int, max_context_length: int, state_dim: int, act_dim: int, n_layers: int = 12, n_heads: int = 12):
+    def __init__(
+        self,
+        embed_size: int,
+        max_context_length: int,
+        state_dim: int,
+        act_dim: int,
+        n_layers: int = 12,
+        n_heads: int = 12,
+    ):
         self.embed_size = embed_size
         self.max_context_length = max_context_length
 
         self.embed_t = nn.Linear(embed_size, embed_size)
 
-        self.embed_s = nn.Linear(state_dim, embed_size)
+        self.embed_s = StateEncoder(embed_size)
         self.embed_a = nn.Embedding(act_dim, embed_size)
         self.embed_R = nn.Linear(1, embed_size)
 
         block_size = max_context_length * 3
-        mask = Tensor.tril(Tensor.ones((block_size, block_size))).view(1, 1, block_size, block_size)
-        self.blocks = [TransformerBlock(embed_size, n_heads, mask)
-                       for _ in range(n_layers)]
+        mask = Tensor.tril(Tensor.ones((block_size, block_size))).view(
+            1, 1, block_size, block_size
+        )
+        self.blocks = [
+            TransformerBlock(embed_size, n_heads, mask) for _ in range(n_layers)
+        ]
 
         self.layer_norm = nn.LayerNorm(embed_size)
 
         self.head = nn.Linear(embed_size, act_dim, bias=False)
 
-    def __call__(self, states: Tensor, actions: Tensor, returns_to_go: Tensor, timesteps: Tensor) -> Tensor:
-        # states: (batch, max_context_length, 210 * 160)
+    def __call__(
+        self, states: Tensor, actions: Tensor, returns_to_go: Tensor, timesteps: Tensor
+    ) -> Tensor:
+        # states: (batch, max_context_length, 4 * 84 * 84)
         # actions: (batch, max_context_length, 1)
         # targets: (batch, max_context_length, 1)
         # rtgs: (batch, max_context_length, 1)
@@ -98,19 +125,23 @@ class DecisionTransformer:
         timesteps_embedding = self.embed_t(timesteps)
         position_embedding = timesteps_embedding.repeat(1, step_size, 1)
 
-        state_embedding = self.embed_s(states).tanh()
+        states = states.reshape(-1, 4, 84, 84)
+        state_embedding = self.embed_s(states).reshape(batch_size, -1, self.embed_size)
+
         action_embedding = self.embed_a(actions.squeeze(-1)).tanh().squeeze(1)
+
         returns_to_go_embedding = self.embed_R(returns_to_go).tanh()
 
         x = Tensor.stack(
             returns_to_go_embedding.unsqueeze(-1),
             state_embedding.unsqueeze(-1),
-            action_embedding.unsqueeze(-1), 
-            dim=-1
+            action_embedding.unsqueeze(-1),
+            dim=-1,
         ).reshape(batch_size, -1, self.embed_size)
 
         x = x + position_embedding
         x = x.dropout()
+
         x = x.sequential(self.blocks)
 
         x = self.layer_norm(x)
@@ -121,12 +152,11 @@ class DecisionTransformer:
 
         return x
 
-    def create_causal_mask(self, seq_length: int) -> Tensor:
-        return Tensor.tril(Tensor.ones((seq_length, seq_length)))
-
-    def sample(self, state: Tensor, rtgs: Tensor, actions: Tensor, timesteps: Tensor) -> Tensor:
-        state_cond = state[:, -self.max_context_length // 3:]
-        rtgs = rtgs[:, -self.max_context_length // 3:]
+    def sample(
+        self, state: Tensor, rtgs: Tensor, actions: Tensor, timesteps: Tensor
+    ) -> Tensor:
+        state_cond = state[:, -self.max_context_length // 3 :]
+        rtgs = rtgs[:, -self.max_context_length // 3 :]
 
         _, _, action_pred = self(state_cond, actions, rtgs, timesteps)
 
