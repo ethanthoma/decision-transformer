@@ -2,13 +2,14 @@ import ale_py
 import gymnasium as gym
 import numpy as np
 import os
-from numpy._core.multiarray import dtype
 from tinygrad import TinyJit, Tensor, dtypes
-from tinygrad.nn.optim import SGD
+from tinygrad.nn.optim import AdamW
 from tinygrad.nn.state import get_parameters, get_state_dict, safe_save
 
 from .dataset import DQNDataset
 from .model import DecisionTransformer
+from .optimizer import DT_Optimizer
+from .scheduler import DT_Scheduler
 
 
 gym.register_envs(ale_py)
@@ -19,11 +20,15 @@ def train(config: dict):
 
     act_dim = config["act_dim"]
     batch_size = config["batch_size"]
+    beta_1 = config["beta_1"]
+    beta_2 = config["beta_2"]
     data_dir = config["dataset_dir"]
     dataset_size = config["dataset_size"]
     embed_size = config["embed_size"]
     epochs = config["epochs"]
+    final_tokens = config["final_tokens"]
     game = config["game"]
+    loop = config["loop"]
     lr = config["lr"]
     max_concurrent = config["max_concurrent"]
     max_context_length = config["max_context_length"]
@@ -35,6 +40,8 @@ def train(config: dict):
     split = config["split"]
     state_dim = config["state_dim"]
     save_dir = config["save_dir"]
+    warmup_tokens = config["warmup_tokens"]
+    weight_decay = config["weight_decay"]
 
     print("Initializing dataset...")
     dataset = DQNDataset(
@@ -59,17 +66,26 @@ def train(config: dict):
         act_dim=act_dim,
         n_layers=n_layers,
         n_heads=n_heads,
+        loop=loop,
     )
 
     # Define the optimizer and loss function
     parameters = get_parameters(model)
     print(f"Parameter count: {np.sum([np.prod(t.shape) for t in parameters]):,}")
-    optim = SGD(parameters, lr=lr)
+
+    optim = DT_Optimizer(model, lr=lr, b1=beta_1, b2=beta_2, weight_decay=weight_decay)
+    scheduler = DT_Scheduler(
+        optim, lr=lr, warmup_tokens=warmup_tokens, final_tokens=final_tokens
+    )
 
     # Define the training loop
     @TinyJit
     def step(
-        states: Tensor, actions: Tensor, returns_to_go: Tensor, timesteps: Tensor
+        states: Tensor,
+        actions: Tensor,
+        returns_to_go: Tensor,
+        timesteps: Tensor,
+        tokens: int = 0,
     ) -> Tensor:
         Tensor.training = True
 
@@ -78,12 +94,12 @@ def train(config: dict):
         optim.zero_grad()
         out = model(states, actions, returns_to_go, timesteps)
 
-        loss = out.sparse_categorical_crossentropy(targets)
-        weighted_loss = loss.mul(returns_to_go).mean()
+        loss = out.sparse_categorical_crossentropy(targets).mean()
 
-        weighted_loss.backward()
+        loss.backward()
 
         optim.step()
+        scheduler.step(tokens)
 
         return loss.realize()
 
@@ -95,6 +111,7 @@ def train(config: dict):
     print("Training model...")
     with Tensor.train():
         data_gen = data_generator(batch_size)
+        tokens: int = 0
         for epoch in range(epochs):
             for _step in range(dataset_size // batch_size):
                 batch = next(data_gen)
@@ -106,7 +123,9 @@ def train(config: dict):
                 returns_to_go = Tensor(returns_to_go, dtype=dtypes.bfloat16)
                 timesteps = Tensor(timesteps, dtype=dtypes.uint8)
 
-                loss = step(states, actions, returns_to_go, timesteps)
+                tokens += int(actions.sign().sum().numpy())
+
+                loss = step(states, actions, returns_to_go, timesteps, tokens)
 
                 print(f"Epoch {epoch+1}, Step {_step+1} | Loss: {loss.numpy()}")
 

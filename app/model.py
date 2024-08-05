@@ -63,6 +63,29 @@ class TransformerBlock:
         return x
 
 
+class LoopTransformerBlock:
+    def __init__(self, embed_size: int, n_heads: int, mask: Tensor, loops: int):
+        self.mask = mask
+        self.attention = MultiHeadSelfAttention(embed_size, n_heads)
+        self.feed_forward = [
+            nn.Linear(embed_size, 4 * embed_size),
+            Tensor.gelu,
+            nn.Linear(4 * embed_size, embed_size),
+            Tensor.dropout,
+        ]
+        self.norm_one = nn.LayerNorm(embed_size)
+        self.norm_two = nn.LayerNorm(embed_size)
+        self.loops = loops
+
+    def __call__(self, x: Tensor):
+        for _ in range(self.loops):
+            h = self.norm_one(x)
+            x = x + self.attention(h, self.mask)
+            h = self.norm_two(x)
+            x = x + h.sequential(self.feed_forward)
+        return x
+
+
 class StateEncoder:
     def __init__(self, embed_size: int):
         self.conv1 = nn.Conv2d(4, 32, 8, stride=4)
@@ -85,8 +108,9 @@ class DecisionTransformer:
         max_context_length: int,
         state_dim: int,
         act_dim: int,
-        n_layers: int = 12,
-        n_heads: int = 12,
+        n_layers: int,
+        n_heads: int,
+        loop: bool = False,
     ):
         self.embed_size = embed_size
         self.max_context_length = max_context_length
@@ -101,13 +125,21 @@ class DecisionTransformer:
         mask = Tensor.tril(Tensor.ones((block_size, block_size))).view(
             1, 1, block_size, block_size
         )
-        self.blocks = [
-            TransformerBlock(embed_size, n_heads, mask) for _ in range(n_layers)
-        ]
+        if loop:
+            self.blocks = [
+                LoopTransformerBlock(embed_size, n_heads, mask, loops=n_layers)
+            ]
+        else:
+            self.blocks = [
+                TransformerBlock(embed_size, n_heads, mask) for _ in range(n_layers)
+            ]
 
         self.layer_norm = nn.LayerNorm(embed_size)
 
         self.head = nn.Linear(embed_size, act_dim, bias=False)
+
+        parameters = nn.state.get_parameters(self)
+        print(f"Parameter count: {np.sum([np.prod(t.shape) for t in parameters]):,}")
 
     def __call__(
         self, states: Tensor, actions: Tensor, returns_to_go: Tensor, timesteps: Tensor
