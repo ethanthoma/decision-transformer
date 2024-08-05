@@ -1,18 +1,12 @@
-import ale_py
-import gymnasium as gym
 import numpy as np
 import os
 from tinygrad import TinyJit, Tensor, dtypes
-from tinygrad.nn.optim import AdamW
 from tinygrad.nn.state import get_parameters, get_state_dict, safe_save
 
 from .dataset import DQNDataset
 from .model import DecisionTransformer
 from .optimizer import DT_Optimizer
 from .scheduler import DT_Scheduler
-
-
-gym.register_envs(ale_py)
 
 
 def train(config: dict):
