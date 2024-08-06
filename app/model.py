@@ -43,7 +43,7 @@ class MultiHeadSelfAttention:
 
 
 class TransformerBlock:
-    def __init__(self, embed_size: int, n_heads: int, mask: Tensor):
+    def __init__(self, embed_size: int, n_heads: int, mask: Optional[Tensor]):
         self.mask = mask
         self.attention = MultiHeadSelfAttention(embed_size, n_heads)
         self.feed_forward = [
@@ -55,16 +55,18 @@ class TransformerBlock:
         self.norm_one = nn.LayerNorm(embed_size)
         self.norm_two = nn.LayerNorm(embed_size)
 
-    def __call__(self, x: Tensor):
+    def __call__(self, x: Tensor, mask: Optional[Tensor]):
         h = self.norm_one(x)
-        x = x + self.attention(h, self.mask)
+        x = x + self.attention(h, mask if mask is not None else self.mask)
         h = self.norm_two(x)
         x = x + h.sequential(self.feed_forward)
         return x
 
 
 class LoopTransformerBlock:
-    def __init__(self, embed_size: int, n_heads: int, mask: Tensor, loops: int):
+    def __init__(
+        self, embed_size: int, n_heads: int, mask: Optional[Tensor], loops: int
+    ):
         self.mask = mask
         self.attention = MultiHeadSelfAttention(embed_size, n_heads)
         self.feed_forward = [
@@ -121,17 +123,13 @@ class DecisionTransformer:
         self.embed_a = nn.Embedding(act_dim, embed_size)
         self.embed_R = nn.Linear(1, embed_size)
 
-        block_size = max_context_length * 3
-        mask = Tensor.tril(Tensor.ones((block_size, block_size))).view(
-            1, 1, block_size, block_size
-        )
         if loop:
             self.blocks = [
-                LoopTransformerBlock(embed_size, n_heads, mask, loops=n_layers)
+                LoopTransformerBlock(embed_size, n_heads, None, loops=n_layers)
             ]
         else:
             self.blocks = [
-                TransformerBlock(embed_size, n_heads, mask) for _ in range(n_layers)
+                TransformerBlock(embed_size, n_heads, None) for _ in range(n_layers)
             ]
 
         self.layer_norm = nn.LayerNorm(embed_size)
@@ -142,15 +140,18 @@ class DecisionTransformer:
         print(f"Parameter count: {np.sum([np.prod(t.shape) for t in parameters]):,}")
 
     def __call__(
-        self, states: Tensor, actions: Tensor, returns_to_go: Tensor, timesteps: Tensor
+        self,
+        states: Tensor,
+        actions: Tensor,
+        returns_to_go: Tensor,
+        timesteps: Tensor,
     ) -> Tensor:
-        # states: (batch, max_context_length, 4 * 84 * 84)
-        # actions: (batch, max_context_length, 1)
-        # targets: (batch, max_context_length, 1)
-        # rtgs: (batch, max_context_length, 1)
+        # states: (batch, context_length, 4 * 84 * 84)
+        # actions: (batch, context_length - 1, 1)
+        # rtgs: (batch, context_length, 1)
         # timesteps: (batch, 1, 1)
 
-        batch_size = states.shape[0]
+        batch_size, context_length = states.shape[:2]
         step_size = 3
 
         timesteps = timesteps.expand(batch_size, -1, self.embed_size)
@@ -160,7 +161,9 @@ class DecisionTransformer:
         states = states.reshape(-1, 4, 84, 84)
         state_embedding = self.embed_s(states).reshape(batch_size, -1, self.embed_size)
 
-        action_embedding = self.embed_a(actions.squeeze(-1)).tanh().squeeze(1)
+        action_embedding = self.embed_a(actions.squeeze(-1)).tanh()
+        if action_embedding.shape[1] < context_length:
+            action_embedding = action_embedding.pad((None, (0, 1), None))
 
         returns_to_go_embedding = self.embed_R(returns_to_go).tanh()
 
@@ -174,25 +177,16 @@ class DecisionTransformer:
         x = x + position_embedding
         x = x.dropout()
 
-        x = x.sequential(self.blocks)
+        mask = Tensor.tril(
+            Tensor.ones((context_length * step_size, context_length * step_size))
+        ).view(1, 1, context_length * step_size, context_length * step_size)
+        for block in self.blocks:
+            x = block(x, mask)
 
         x = self.layer_norm(x)
 
-        x = x[:, ::step_size, :]
+        x = x[:, 1::step_size, :]  # only take state embeddings
 
         x = self.head(x)
 
         return x
-
-    def sample(
-        self, state: Tensor, rtgs: Tensor, actions: Tensor, timesteps: Tensor
-    ) -> Tensor:
-        state_cond = state[:, -self.max_context_length // 3 :]
-        rtgs = rtgs[:, -self.max_context_length // 3 :]
-
-        _, _, action_pred = self(state_cond, actions, rtgs, timesteps)
-
-        probs = action_pred[-1].softmax()
-        next_action = np.random.multinomial(1, probs[-1].numpy())
-
-        return Tensor(next_action)

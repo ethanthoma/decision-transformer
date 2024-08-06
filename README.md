@@ -54,7 +54,9 @@ the 50 checkpoints. Data loading is now done in one day instead of 7.
 
 The model code is very similar to the `PyTorch` implementation from the [original
 codebase](https://github.com/kzl/decision-transformer). Everything is reimplemented
-in `tinygrad`. The model uses about 31GBs of RAM during training.
+in `tinygrad`. 
+
+The model uses about 31GBs of RAM during training and 0.5GBs during testing.
 
 ## Modifications
 

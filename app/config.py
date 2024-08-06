@@ -22,12 +22,12 @@ def get_config():
         "--final_tokens",
         type=int,
         default=2 * 500_000 * 50,
-        help="Number of warmup tokens",
+        help="Number of final tokens",
     )
     train_parser.add_argument(
         "--max_concurrent",
         type=int,
-        default=2,
+        default=4,
         help="Number of concurrent processes",
     )
     train_parser.add_argument(
@@ -58,7 +58,7 @@ def get_config():
     # Testing parameters
     test_parser = subparsers.add_parser("test", help="Test the model")
     test_parser.add_argument(
-        "--num_episodes", type=int, default=10, help="Number of episodes"
+        "--game_version", type=str, default="v4", help="Game version"
     )
     test_parser.add_argument(
         "--max_steps", type=int, default=1_000, help="Maximum steps per episode"
@@ -70,7 +70,13 @@ def get_config():
         help="Name of the trained model",
     )
     test_parser.add_argument(
-        "--game_version", type=str, default="v4", help="Game version"
+        "--num_episodes", type=int, default=10, help="Number of episodes"
+    )
+    test_parser.add_argument(
+        "--render_mode",
+        choices=[None, "human"],
+        default=None,
+        help="Rendering mode for gymnasium",
     )
     test_parser.add_argument(
         "--target_return", type=int, default=20, help="Target return"

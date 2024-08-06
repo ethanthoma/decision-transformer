@@ -1,7 +1,8 @@
-import numpy as np
+import math
 import os
 from tinygrad import TinyJit, Tensor, dtypes
-from tinygrad.nn.state import get_parameters, get_state_dict, safe_save
+from tinygrad.nn.state import get_state_dict, safe_save
+from tinygrad.helpers import tqdm
 
 from .dataset import DQNDataset
 from .model import DecisionTransformer
@@ -63,17 +64,13 @@ def train(config: dict):
         loop=loop,
     )
 
-    # Define the optimizer and loss function
-    parameters = get_parameters(model)
-    print(f"Parameter count: {np.sum([np.prod(t.shape) for t in parameters]):,}")
-
+    # Setup the optimizer and scheduler
     optim = DT_Optimizer(model, lr=lr, b1=beta_1, b2=beta_2, weight_decay=weight_decay)
     scheduler = DT_Scheduler(
         optim, lr=lr, warmup_tokens=warmup_tokens, final_tokens=final_tokens
     )
 
     # Define the training loop
-    @TinyJit
     def step(
         states: Tensor,
         actions: Tensor,
@@ -82,10 +79,10 @@ def train(config: dict):
         tokens: int = 0,
     ) -> Tensor:
         Tensor.training = True
-
         targets = actions.squeeze(-1)
 
         optim.zero_grad()
+
         out = model(states, actions, returns_to_go, timesteps)
 
         loss = out.sparse_categorical_crossentropy(targets).mean()
@@ -97,19 +94,20 @@ def train(config: dict):
 
         return loss.realize()
 
-    def data_generator(batch_size):
-        while True:
-            yield dataset.sample(batch_size)
+    jitStep = TinyJit(step)
 
     # Train the model
     print("Training model...")
     with Tensor.train():
-        data_gen = data_generator(batch_size)
         tokens: int = 0
         for epoch in range(epochs):
-            for _step in range(dataset_size // batch_size):
-                batch = next(data_gen)
-
+            for batch in (
+                t := tqdm(
+                    dataset.batches(batch_size),
+                    "Epoch: %d, Loss: %.4f" % (epoch + 1, 0.0),
+                    total=math.ceil(dataset_size / batch_size),
+                )
+            ):
                 states, actions, returns_to_go, timesteps = batch
 
                 states = Tensor(states, dtype=dtypes.uint8)
@@ -117,11 +115,15 @@ def train(config: dict):
                 returns_to_go = Tensor(returns_to_go, dtype=dtypes.bfloat16)
                 timesteps = Tensor(timesteps, dtype=dtypes.uint8)
 
-                tokens += int(actions.sign().sum().numpy())
+                tokens += (actions >= 0).sum().numpy().sum()
 
-                loss = step(states, actions, returns_to_go, timesteps, tokens)
+                # JIT can't handle dynamic batch sizes
+                if states.shape[0] < batch_size:
+                    loss = step(states, actions, returns_to_go, timesteps, tokens)
+                else:
+                    loss = jitStep(states, actions, returns_to_go, timesteps, tokens)
 
-                print(f"Epoch {epoch+1}, Step {_step+1} | Loss: {loss.numpy()}")
+                t.set_description("Epoch: %d, Loss: %.4f" % (epoch + 1, loss.numpy()))
 
             # Save the model
             state_dict = get_state_dict(model)

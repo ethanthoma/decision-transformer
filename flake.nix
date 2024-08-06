@@ -15,7 +15,6 @@
     flake-utils.lib.eachDefaultSystem
       (system:
         let
-          # see https://github.com/nix-community/poetry2nix/tree/master#api for more functions and examples.
           pkgs = import nixpkgs {
             inherit system;
             config = {
@@ -78,8 +77,12 @@
                           ''
                             substituteInPlace tinygrad/engine/jit.py --replace-fail '"CUDA", "NV", "AMD"' '"CUDA", "NV", "AMD", "HSA"'
                             substituteInPlace tinygrad/engine/search.py --replace-fail '"CUDA", "AMD", "NV"' '"CUDA", "AMD", "NV", "HSA"'
+
                             # patch correct path to opencl
                             substituteInPlace tinygrad/runtime/autogen/opencl.py --replace-fail "ctypes.util.find_library('OpenCL')" "'${pkgs.ocl-icd}/lib/libOpenCL.so'"
+                            # patch correct path to cuda
+                            substituteInPlace tinygrad/runtime/autogen/cuda.py --replace-fail "ctypes.util.find_library('nvrtc')" "'${pkgs.lib.getLib pkgs.cudaPackages.cuda_nvrtc}/lib/libnvrtc.so'"
+                            substituteInPlace tinygrad/runtime/autogen/cuda.py --replace-fail "ctypes.util.find_library('cuda')" "'${pkgs.addDriverRunpath.driverLink}/lib/libcuda.so'"
                           '';
                       }
                     );
@@ -107,6 +110,7 @@
           };
 
           devShells.default = pkgs.mkShell {
+            nativeBuildInputs = [ pkgs.cudatoolkit ];
             inputsFrom = [ self.packages.${system}.default ];
           };
         }

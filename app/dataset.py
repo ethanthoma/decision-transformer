@@ -1,3 +1,4 @@
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gc
 import gzip
@@ -5,9 +6,7 @@ import numpy as np
 from numpy._typing import ArrayLike
 import os
 import pickle
-
-from itertools import islice
-from typing import Tuple
+from typing import Generator, Tuple
 
 from .buffer import ReplayBuffer
 
@@ -16,9 +15,9 @@ class DQNDataset:
     def __init__(
         self,
         state_dim: int,
-        max_context_length: int,
         max_timesteps: int,
         game: str,
+        max_context_length: int,
         data_dir: str = "data",
         size: int = 500_000,
         split: int = 1,
@@ -26,8 +25,8 @@ class DQNDataset:
         save_dir: str = "data",
         max_concurrent: int = 4,
     ):
-        self.state_dim = state_dim
         self.max_context_length = max_context_length
+        self.state_dim = state_dim
         self.max_timesteps = max_timesteps
         self.game = game
         self.data_dir = data_dir
@@ -37,7 +36,7 @@ class DQNDataset:
         self.save_dir = save_dir
         self.max_concurrent = max_concurrent
 
-        self.filename = f"DQNDataset_{game}_{state_dim}_{max_context_length}_{max_timesteps}_{size}_{split}_{num_checkpoints}.pkl"
+        self.filename = f"DQNDataset_{game}_{state_dim}_{max_timesteps}_{size}_{split}_{num_checkpoints}.pkl"
         self.filepath = os.path.join(save_dir, self.filename)
 
         if os.path.exists(self.filepath):
@@ -62,10 +61,9 @@ class DQNDataset:
 
         total_trajectories = 0
         current_index = 0
-        max_concurrent = 2  # Adjust based on your system
 
-        for i in range(0, len(checkpoints), max_concurrent):
-            chunk = checkpoints[i : i + max_concurrent]
+        for i in range(0, len(checkpoints), self.max_concurrent):
+            chunk = checkpoints[i : i + self.max_concurrent]
 
             with ThreadPoolExecutor(max_workers=len(chunk)) as executor:
                 future_to_ckpt = {
@@ -183,56 +181,66 @@ class DQNDataset:
     def __getitem__(
         self, index: int
     ) -> Tuple[ArrayLike, ArrayLike, ArrayLike, ArrayLike]:
-        closest_idx = self.done_idx[np.searchsorted(self.done_idx, index, side="right")]
+        done_idx_idx = np.searchsorted(self.done_idx, index, side="right")
 
-        closest_idx = (
-            closest_idx
-            if closest_idx - index <= self.max_context_length
-            else self.max_context_length + index
-        )
+        done_idx = self.done_idx[done_idx_idx]
+        done_idx = min(done_idx, index + self.max_context_length)
 
-        states = self.states[index:closest_idx]
-        actions = self.actions[index:closest_idx]
-        returns_to_go = self.returns_to_go[index:closest_idx]
-        timesteps = self.timesteps[index:closest_idx]
+        index = done_idx - self.max_context_length
+
+        states = self.states[index:done_idx]
+        actions = self.actions[index:done_idx]
+        returns_to_go = self.returns_to_go[index:done_idx]
+        timesteps = self.timesteps[index:done_idx]
+
+        start_idx = 0 if done_idx_idx == 0 else self.done_idx[done_idx_idx - 1]
+        start_idx = max(start_idx, index - 4)
 
         # Reshape states to include 4 frames
         reshaped_states = []
-        for i in range(len(states)):
-            if i < 3:
-                frames = [states[0]] * (3 - i) + list(states[: i + 1])
-            else:
-                frames = states[i - 3 : i + 1]
+        frames = deque(maxlen=4)
+        for i in range(4):
+            idx = max(index - 4 + i, start_idx)
+            frames.append(self.states[idx])
 
-            reshaped_frame = np.concatenate(frames, axis=0)
-            reshaped_states.append(reshaped_frame)
+        for state in states:
+            frames.append(state)
+            reshaped_states.append(np.stack(frames).flatten())
 
         reshaped_states = np.array(reshaped_states)
 
         return reshaped_states, actions, returns_to_go, timesteps
 
-    def sample(
-        self, batch_size: int
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        indices = np.random.randint(0, self.done_idx[-1], size=batch_size)
-        batches = [self[i] for i in indices]
-
-        max_len = self.max_context_length
-        states = np.zeros((batch_size, max_len, 4 * self.state_dim), dtype=np.uint8)
-        actions = np.zeros((batch_size, max_len, 1), dtype=np.int8)
-        returns_to_go = np.zeros((batch_size, max_len, 1), dtype=np.float32)
-        timesteps = np.zeros((batch_size, max_len, 1), dtype=np.int32)
-
-        for i, batch in enumerate(batches):
-            states[i, : len(batch[0])] = batch[0]
-            actions[i, : len(batch[1])] = batch[1]
-            returns_to_go[i, : len(batch[2])] = batch[2]
-            timesteps[i, : len(batch[3])] = batch[3]
-
-        return states, actions, returns_to_go, timesteps
-
     def __len__(self) -> int:
         return self.total_size
+
+    def batches(
+        self, batch_size: int
+    ) -> Generator[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], None, None]:
+        indices = np.random.permutation(self.total_size)
+        for start_idx in range(0, self.total_size, batch_size):
+            end_idx = min(start_idx + batch_size, self.total_size)
+            batch_indices = indices[start_idx:end_idx]
+
+            batch_states = []
+            batch_actions = []
+            batch_returns = []
+            batch_timesteps = []
+
+            for idx in batch_indices:
+                states, actions, returns, timesteps = self[idx]
+
+                batch_states.append(states)
+                batch_actions.append(actions)
+                batch_returns.append(returns)
+                batch_timesteps.append(timesteps)
+
+            yield (
+                np.array(batch_states),
+                np.array(batch_actions),
+                np.array(batch_returns),
+                np.array(batch_timesteps),
+            )
 
     def save(self):
         data = {
