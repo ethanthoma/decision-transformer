@@ -79,10 +79,10 @@ class LoopTransformerBlock:
         self.norm_two = nn.LayerNorm(embed_size)
         self.loops = loops
 
-    def __call__(self, x: Tensor):
+    def __call__(self, x: Tensor, mask: Optional[Tensor]):
         for _ in range(self.loops):
             h = self.norm_one(x)
-            x = x + self.attention(h, self.mask)
+            x = x + self.attention(h, mask if mask is not None else self.mask)
             h = self.norm_two(x)
             x = x + h.sequential(self.feed_forward)
         return x
@@ -145,11 +145,18 @@ class DecisionTransformer:
         actions: Tensor,
         returns_to_go: Tensor,
         timesteps: Tensor,
+        batch_size: Optional[int] = None,
     ) -> Tensor:
         # states: (batch, context_length, 4 * 84 * 84)
         # actions: (batch, context_length - 1, 1)
         # rtgs: (batch, context_length, 1)
         # timesteps: (batch, 1, 1)
+
+        if batch_size is not None:
+            states = states[:batch_size]
+            actions = actions[:batch_size]
+            returns_to_go = returns_to_go[:batch_size]
+            timesteps = timesteps[:batch_size]
 
         batch_size, context_length = states.shape[:2]
         step_size = 3

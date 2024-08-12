@@ -196,6 +196,8 @@ class DQNDataset:
         start_idx = 0 if done_idx_idx == 0 else self.done_idx[done_idx_idx - 1]
         start_idx = max(start_idx, index - 4)
 
+        print(f"index: {index}, done_idx: {done_idx}, start_idx: {start_idx}")
+
         # Reshape states to include 4 frames
         reshaped_states = []
         frames = deque(maxlen=4)
@@ -216,30 +218,42 @@ class DQNDataset:
 
     def batches(
         self, batch_size: int
-    ) -> Generator[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], None, None]:
+    ) -> Generator[
+        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int], None, None
+    ]:
         indices = np.random.permutation(self.total_size)
         for start_idx in range(0, self.total_size, batch_size):
             end_idx = min(start_idx + batch_size, self.total_size)
             batch_indices = indices[start_idx:end_idx]
 
-            batch_states = []
-            batch_actions = []
-            batch_returns = []
-            batch_timesteps = []
+            batch_states = np.zeros(
+                (batch_size, self.max_context_length, self.state_dim * 4),
+                dtype=np.uint8,
+            )
+            batch_actions = np.zeros(
+                (batch_size, self.max_context_length, 1), dtype=np.uint8
+            )
+            batch_returns = np.zeros(
+                (batch_size, self.max_context_length, 1), dtype=np.int8
+            )
+            batch_timesteps = np.zeros(
+                (batch_size, self.max_context_length, 1), dtype=np.uint8
+            )
 
-            for idx in batch_indices:
+            for b, idx in enumerate(batch_indices):
                 states, actions, returns, timesteps = self[idx]
 
-                batch_states.append(states)
-                batch_actions.append(actions)
-                batch_returns.append(returns)
-                batch_timesteps.append(timesteps)
+                batch_states[b, :, :] = states
+                batch_actions[b, :, :] = actions
+                batch_returns[b, :, :] = returns
+                batch_timesteps[b, :, :] = timesteps
 
             yield (
-                np.array(batch_states),
-                np.array(batch_actions),
-                np.array(batch_returns),
-                np.array(batch_timesteps),
+                batch_states,
+                batch_actions,
+                batch_returns,
+                batch_timesteps,
+                len(batch_indices),
             )
 
     def save(self):

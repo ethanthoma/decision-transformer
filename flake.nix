@@ -80,9 +80,9 @@
 
                             # patch correct path to opencl
                             substituteInPlace tinygrad/runtime/autogen/opencl.py --replace-fail "ctypes.util.find_library('OpenCL')" "'${pkgs.ocl-icd}/lib/libOpenCL.so'"
-                            # patch correct path to cuda
-                            substituteInPlace tinygrad/runtime/autogen/cuda.py --replace-fail "ctypes.util.find_library('nvrtc')" "'${pkgs.lib.getLib pkgs.cudaPackages.cuda_nvrtc}/lib/libnvrtc.so'"
-                            substituteInPlace tinygrad/runtime/autogen/cuda.py --replace-fail "ctypes.util.find_library('cuda')" "'${pkgs.addDriverRunpath.driverLink}/lib/libcuda.so'"
+                            # patch correct path to hip
+                            substituteInPlace tinygrad/runtime/autogen/comgr.py \
+                              --replace-fail "/opt/rocm/lib/libamd_comgr.so" "${pkgs.rocmPackages.rocm-comgr}/lib/libamd_comgr.so"                          
                           '';
                       }
                     );

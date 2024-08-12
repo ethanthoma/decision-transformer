@@ -1,13 +1,14 @@
 import math
 import os
 from tinygrad import TinyJit, Tensor, dtypes
-from tinygrad.nn.state import get_state_dict, safe_save
 from tinygrad.helpers import tqdm
+from tinygrad.nn.optim import AdamW, OptimizerGroup
+from tinygrad.nn.state import get_state_dict, safe_save, get_parameters
+import gc
 
 from .dataset import DQNDataset
 from .model import DecisionTransformer
-from .optimizer import DT_Optimizer
-from .scheduler import DT_Scheduler
+from .scheduler import DT_Scheduler, LRSchedulerGroup
 
 
 def train(config: dict):
@@ -38,6 +39,7 @@ def train(config: dict):
     warmup_tokens = config["warmup_tokens"]
     weight_decay = config["weight_decay"]
 
+    # ** Dataset **
     print("Initializing dataset...")
     dataset = DQNDataset(
         state_dim=state_dim,
@@ -52,7 +54,7 @@ def train(config: dict):
         max_concurrent=max_concurrent,
     )
 
-    # Initialize the model
+    # ** Model **
     print("Initializing model...")
     model = DecisionTransformer(
         embed_size=embed_size,
@@ -63,70 +65,115 @@ def train(config: dict):
         n_heads=n_heads,
         loop=loop,
     )
+    parameters = get_parameters(model)
 
     # Setup the optimizer and scheduler
-    optim = DT_Optimizer(model, lr=lr, b1=beta_1, b2=beta_2, weight_decay=weight_decay)
-    scheduler = DT_Scheduler(
-        optim, lr=lr, warmup_tokens=warmup_tokens, final_tokens=final_tokens
+    # optim = DT_Optimizer(model, lr=lr, b1=beta_1, b2=beta_2, weight_decay=weight_decay)
+    # scheduler = DT_Scheduler( optim, lr=lr, warmup_tokens=warmup_tokens, final_tokens=final_tokens)
+
+    # ** Optimizer **
+    weight_decay_list = [
+        v
+        for k, v in get_state_dict(model).items()
+        if "norm" in k or "bias" in k or "embed_a" in k
+    ]
+    no_weight_decay_list = [p for p in parameters if p not in set(weight_decay_list)]
+
+    optim_weight_decay = AdamW(
+        weight_decay_list, lr=lr, b1=beta_1, b2=beta_2, weight_decay=weight_decay
+    )
+    optim_no_weight_decay = AdamW(
+        no_weight_decay_list, lr=lr, b1=beta_1, b2=beta_2, weight_decay=0.0
+    )
+    optim_group = OptimizerGroup(optim_weight_decay, optim_no_weight_decay)
+
+    # ** LR Scheduler **
+    scheduler_weight_decay = DT_Scheduler(
+        optim_weight_decay,
+        lr=lr,
+        warmup_tokens=warmup_tokens,
+        final_tokens=final_tokens,
+    )
+    scheduler_no_weight_decay = DT_Scheduler(
+        optim_no_weight_decay,
+        lr=lr,
+        warmup_tokens=warmup_tokens,
+        final_tokens=final_tokens,
+    )
+    scheduler_group = LRSchedulerGroup(
+        scheduler_weight_decay, scheduler_no_weight_decay
     )
 
-    # Define the training loop
+    # ** Loss Function **
+    def lossfn(out, y):
+        return out.sparse_categorical_crossentropy(y.squeeze(-1)).mean()
+
+    # ** Training Step **
+    @TinyJit
     def step(
         states: Tensor,
         actions: Tensor,
         returns_to_go: Tensor,
         timesteps: Tensor,
+        size: int,
         tokens: int = 0,
     ) -> Tensor:
         Tensor.training = True
-        targets = actions.squeeze(-1)
 
-        optim.zero_grad()
+        out = model(states, actions, returns_to_go, timesteps, size)
 
-        out = model(states, actions, returns_to_go, timesteps)
+        loss = lossfn(out, actions[:size])
 
-        loss = out.sparse_categorical_crossentropy(targets).mean()
+        optim_group.zero_grad()
 
         loss.backward()
 
-        optim.step()
-        scheduler.step(tokens)
+        optim_group.step()
+        scheduler_group.step(Tensor([tokens], dtype=dtypes.int32))
 
         return loss.realize()
 
-    jitStep = TinyJit(step)
-
-    # Train the model
+    # ** Training Loop **
     print("Training model...")
-    with Tensor.train():
-        tokens: int = 0
-        for epoch in range(epochs):
-            for batch in (
-                t := tqdm(
-                    dataset.batches(batch_size),
-                    "Epoch: %d, Loss: %.4f" % (epoch + 1, 0.0),
-                    total=math.ceil(dataset_size / batch_size),
-                )
-            ):
-                states, actions, returns_to_go, timesteps = batch
-
-                states = Tensor(states, dtype=dtypes.uint8)
-                actions = Tensor(actions, dtype=dtypes.uint8)
-                returns_to_go = Tensor(returns_to_go, dtype=dtypes.bfloat16)
-                timesteps = Tensor(timesteps, dtype=dtypes.uint8)
-
-                tokens += (actions >= 0).sum().numpy().sum()
-
-                # JIT can't handle dynamic batch sizes
-                if states.shape[0] < batch_size:
-                    loss = step(states, actions, returns_to_go, timesteps, tokens)
-                else:
-                    loss = jitStep(states, actions, returns_to_go, timesteps, tokens)
-
-                t.set_description("Epoch: %d, Loss: %.4f" % (epoch + 1, loss.numpy()))
-
-            # Save the model
-            state_dict = get_state_dict(model)
-            safe_save(
-                state_dict, os.path.join(model_dir, f"model-epoch{epoch+1}.safetensors")
+    tokens: int = 0
+    for epoch in range(epochs):
+        for batch in (
+            t := tqdm(
+                dataset.batches(batch_size),
+                "Epoch: %d, Loss: %.4f, LR: %.6f"
+                % (epoch + 1, 0.0, scheduler_group.schedulers[0].get_lr().item()),
+                total=math.ceil(dataset_size / batch_size),
             )
+        ):
+            states, actions, returns_to_go, timesteps, size = batch
+
+            states = Tensor(states, dtype=dtypes.uint8)
+            actions = Tensor(actions, dtype=dtypes.uint8)
+            returns_to_go = Tensor(returns_to_go, dtype=dtypes.int8)
+            timesteps = Tensor(timesteps, dtype=dtypes.uint8)
+
+            tokens += (timesteps > 0).sum().numpy().sum()
+
+            loss = step(states, actions, returns_to_go, timesteps, size, tokens)
+
+            Tensor.training = False
+            t.set_description(
+                "Epoch: %d, Loss: %.4f, LR: %.6f"
+                % (
+                    epoch + 1,
+                    loss.numpy(),
+                    scheduler_group.schedulers[0].get_lr().item(),
+                )
+            )
+
+            del batch
+            del states, actions, returns_to_go, timesteps
+            del loss
+            gc.collect()
+
+        # Save the model
+        state_dict = get_state_dict(model)
+        safe_save(
+            state_dict, os.path.join(model_dir, f"model-epoch{epoch+1}.safetensors")
+        )
+        del state_dict
