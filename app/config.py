@@ -46,7 +46,7 @@ def get_config():
         help="Training dataset save directory",
     )
     train_parser.add_argument(
-        "--split", type=int, default=1, help="Split number to load"
+        "--split", type=int, default=5, help="Split number to load"
     )
     train_parser.add_argument(
         "--warmup_tokens", type=int, default=20 * 512, help="Number of warmup tokens"
