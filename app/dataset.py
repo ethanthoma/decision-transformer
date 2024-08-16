@@ -196,8 +196,6 @@ class DQNDataset:
         start_idx = 0 if done_idx_idx == 0 else self.done_idx[done_idx_idx - 1]
         start_idx = max(start_idx, index - 4)
 
-        print(f"index: {index}, done_idx: {done_idx}, start_idx: {start_idx}")
-
         # Reshape states to include 4 frames
         reshaped_states = []
         frames = deque(maxlen=4)

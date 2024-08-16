@@ -107,17 +107,18 @@ class DecisionTransformer:
     def __init__(
         self,
         embed_size: int,
-        max_context_length: int,
+        context_length: int,
         state_dim: int,
         act_dim: int,
         n_layers: int,
         n_heads: int,
+        max_timesteps: int,
         loop: bool = False,
     ):
         self.embed_size = embed_size
-        self.max_context_length = max_context_length
+        self.context_length = context_length
 
-        self.embed_t = nn.Linear(embed_size, embed_size)
+        self.embed_t = nn.Embedding(max_timesteps, embed_size)
 
         self.embed_s = StateEncoder(embed_size)
         self.embed_a = nn.Embedding(act_dim, embed_size)
@@ -145,34 +146,27 @@ class DecisionTransformer:
         actions: Tensor,
         returns_to_go: Tensor,
         timesteps: Tensor,
-        batch_size: Optional[int] = None,
     ) -> Tensor:
         # states: (batch, context_length, 4 * 84 * 84)
         # actions: (batch, context_length - 1, 1)
         # rtgs: (batch, context_length, 1)
-        # timesteps: (batch, 1, 1)
-
-        if batch_size is not None:
-            states = states[:batch_size]
-            actions = actions[:batch_size]
-            returns_to_go = returns_to_go[:batch_size]
-            timesteps = timesteps[:batch_size]
-
+        # timesteps: (batch, context_length, 1)
         batch_size, context_length = states.shape[:2]
         step_size = 3
 
-        timesteps = timesteps.expand(batch_size, -1, self.embed_size)
-        timesteps_embedding = self.embed_t(timesteps)
-        position_embedding = timesteps_embedding.repeat(1, step_size, 1)
+        timesteps_embedding = self.embed_t(timesteps.squeeze(-1))
 
         states = states.reshape(-1, 4, 84, 84)
         state_embedding = self.embed_s(states).reshape(batch_size, -1, self.embed_size)
+        state_embedding = state_embedding + timesteps_embedding
 
         action_embedding = self.embed_a(actions.squeeze(-1)).tanh()
         if action_embedding.shape[1] < context_length:
             action_embedding = action_embedding.pad((None, (0, 1), None))
+        action_embedding = action_embedding + timesteps_embedding
 
         returns_to_go_embedding = self.embed_R(returns_to_go).tanh()
+        returns_to_go_embedding = returns_to_go_embedding + timesteps_embedding
 
         x = Tensor.stack(
             returns_to_go_embedding.unsqueeze(-1),
@@ -181,12 +175,14 @@ class DecisionTransformer:
             dim=-1,
         ).reshape(batch_size, -1, self.embed_size)
 
-        x = x + position_embedding
         x = x.dropout()
 
-        mask = Tensor.tril(
-            Tensor.ones((context_length * step_size, context_length * step_size))
-        ).view(1, 1, context_length * step_size, context_length * step_size)
+        mask = Tensor.full(
+            (1, 1, context_length * step_size, context_length * step_size),
+            float("-inf"),
+            dtype=x.dtype,
+        ).triu(1)
+
         for block in self.blocks:
             x = block(x, mask)
 

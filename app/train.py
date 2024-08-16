@@ -58,11 +58,12 @@ def train(config: dict):
     print("Initializing model...")
     model = DecisionTransformer(
         embed_size=embed_size,
-        max_context_length=max_context_length,
+        context_length=max_context_length,
         state_dim=state_dim,
         act_dim=act_dim,
         n_layers=n_layers,
         n_heads=n_heads,
+        max_timesteps=max_timesteps,
         loop=loop,
     )
     parameters = get_parameters(model)
@@ -120,7 +121,12 @@ def train(config: dict):
     ) -> Tensor:
         Tensor.training = True
 
-        out = model(states, actions, returns_to_go, timesteps, size)
+        states = states[:size]
+        actions = actions[:size]
+        returns_to_go = returns_to_go[:size]
+        timesteps = timesteps[:size]
+
+        out = model(states, actions, returns_to_go, timesteps)
 
         loss = lossfn(out, actions[:size])
 
