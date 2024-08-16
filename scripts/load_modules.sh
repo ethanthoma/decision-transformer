@@ -1,6 +1,9 @@
-module purge
+echo "LOADING MODULES"
+echo "LOAD CVMFS_CC"
 module load CVMFS_CC
-module load gcc/11.3.0
-module load python/3.11.5
-module load scipy-stack/2023b
+echo "LOAD nvhpc"
 module load nvhpc/23.7
+echo "LOAD python"
+module load python/3.11.5
+echo "LOAD scipy-stack"
+module load scipy-stack/2023b

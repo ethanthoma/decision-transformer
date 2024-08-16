@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #SBATCH --account=st-gerope-1-gpu
-#SBATCH --time=4:0:0
+#SBATCH --time=5:30:0
 #SBATCH --ntasks=1
 #SBATCH --nodes=01
 #SBATCH --output=output/%j.out
@@ -14,11 +14,13 @@
 lscpu
 nvidia-smi
 
-./scripts/load_modules.sh
+source scripts/load_modules.sh
+source scripts/link_cuda.sh
 
 source decision-transformer/bin/activate
 
-./scripts/link_cuda.sh
+pip list
 
 # run eval
+mkdir -p models
 CUDA=1 python -m app.main train
