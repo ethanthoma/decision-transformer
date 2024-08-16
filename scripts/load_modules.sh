@@ -1,9 +1,5 @@
 echo "LOADING MODULES"
-echo "LOAD CVMFS_CC"
 module load CVMFS_CC
-echo "LOAD nvhpc"
 module load nvhpc/23.7
-echo "LOAD python"
 module load python/3.11.5
-echo "LOAD scipy-stack"
 module load scipy-stack/2023b
